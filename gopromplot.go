@@ -24,7 +24,7 @@ type Run struct {
 	ScreenDir string
 	JSONFiles []string
 	PromExprs chan PpInfo
-	Client    []*prom.Client
+	Client    *prom.Client
 	Ctx       context.Context
 	Cancel    context.CancelFunc
 }
@@ -33,19 +33,30 @@ var (
 	PrometheusAdress string
 	From             string
 	To               string
+	Query            string
+	Name             string
+	Step             int64
 )
 
 func init() {
 
-	flag.StringVar(&PrometheusAdress, "prometheus_address", "http://192.168.2.188:9090", "input prometheus_address")
-	flag.StringVar(&From, "prometheus_starttime", time.Now().Local().AddDate(0, 0, -3).Format(timeFormat), "input start time, default is 3 days ago")
-	flag.StringVar(&To, "prometheus_endtime", time.Now().Local().Format(timeFormat), "input end time,default is now")
-
+	flag.StringVar(&PrometheusAdress, "address", "http://192.168.2.188:9090", "input prometheus_address")
+	flag.StringVar(&From, "start", time.Now().Local().AddDate(0, 0, -3).Format(timeFormat), "input start time, default is 3 days ago")
+	flag.StringVar(&To, "end", time.Now().Local().Format(timeFormat), "input end time,default is now")
+	flag.StringVar(&Query, "query", "", "input prometheus query")
+	flag.StringVar(&Name, "name", "", "input name with request query")
+	flag.Int64Var(&Step, "step", 15, "input step with request query")
 }
 
 func main() {
-	log.Info("init...")
 	flag.Parse()
+	log.Info("init...")
+
+	c, err := prom.NewClient(PrometheusAdress)
+	if err != nil {
+		panic(err)
+	}
+	log.Infof("s %+v  e %+v", dateparse.MustParse(From).Local(), dateparse.MustParse(To).Local())
 
 	ctx, cancel := context.WithCancel(context.Background())
 	r := &Run{
@@ -54,13 +65,7 @@ func main() {
 		PromExprs: make(chan PpInfo, 10000),
 		Ctx:       ctx,
 		Cancel:    cancel,
-	}
-	for i := 0; i < getCPUNum(); i++ {
-		c, err := prom.NewClient(PrometheusAdress)
-		if err != nil {
-			panic(err)
-		}
-		r.Client = append(r.Client, c)
+		Client:    c,
 	}
 
 	sc := make(chan os.Signal, 1)
@@ -94,10 +99,10 @@ func main() {
 	var wg sync.WaitGroup
 	for i := 0; i < getCPUNum(); i++ {
 		wg.Add(1)
-		go func(c *prom.Client) {
-			r.CreateImages(c)
+		go func() {
+			r.CreateImages()
 			wg.Done()
-		}(r.Client[i])
+		}()
 	}
 
 	wg.Wait()

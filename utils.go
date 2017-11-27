@@ -7,9 +7,9 @@ import (
 	"github.com/ngaut/log"
 	"github.com/prometheus/common/model"
 	"github.com/siddontang/prom-plot/pkg/plot"
-	"github.com/siddontang/prom-plot/pkg/prom"
 	"io"
 	"io/ioutil"
+	"math"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -24,10 +24,27 @@ var loadJSON = []string{
 	"https://raw.githubusercontent.com/pingcap/tidb-ansible/master/scripts/pd.json",
 }
 
+const (
+	DefaultVaule = 0
+)
+
 type PpInfo struct {
 	Expr string `json:"expr"`
 	Name string
 	Step int64 `json:"step"`
+}
+
+//FixErrorValue fix number is NaN
+func (r *Run) FixErrorValue(m model.Matrix) model.Matrix {
+	for i, subM := range m {
+		for subI, subV := range subM.Values {
+			if math.IsNaN(float64(subV.Value)) {
+				m[i].Values[subI].Value = model.SampleValue(DefaultVaule)
+			}
+		}
+	}
+
+	return m
 }
 
 //JSONData handle json data
@@ -71,6 +88,14 @@ func (r *Run) JSONData(sourceData interface{}, title string) {
 
 //GetExprs get json info
 func (r *Run) GetExprs() error {
+	if Query != "" && Name != "" {
+		r.PromExprs <- PpInfo{
+			Expr: Query,
+			Name: Name,
+			Step: Step,
+		}
+		return nil
+	}
 	loopFiles := r.JSONFiles
 	if len(loopFiles) == 0 {
 		loopFiles = loadJSON
@@ -119,23 +144,30 @@ func (r *Run) PrefixWork() error {
 }
 
 //CreateImages create images
-func (r *Run) CreateImages(c *prom.Client) {
+func (r *Run) CreateImages() {
 	for p := range r.PromExprs {
+		if strings.Contains(p.Expr, "$") {
+			continue
+		}
 		select {
 		case <-r.Ctx.Done():
 			return
 		default:
-			var m model.Matrix
-			var ok bool
+			var v model.Value
+			var err error
 			for i := 0; i < 3; i++ {
-				v, err := c.Query(r.Ctx, p.Expr, r.From, r.To, time.Duration(p.Step)*time.Second)
+				v, err = r.Client.Query(r.Ctx, p.Expr, r.From, r.To, time.Duration(p.Step)*time.Second)
 				if err != nil && i == 2 {
 					log.Errorf("expr %v can not get data from prometheus with error %v", p, err)
 					continue
-				} else if m, ok = v.(model.Matrix); !ok {
-					continue
 				}
+				time.Sleep(1 * time.Second)
 			}
+			m, ok := v.(model.Matrix)
+			if !ok {
+				continue
+			}
+			m = r.FixErrorValue(m)
 			w, err := plot.Plot(m, p.Name, "png")
 			if err != nil {
 				log.Errorf("can not write it with error %v", err)
